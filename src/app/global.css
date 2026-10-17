@@ -1,0 +1,26 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css";
+
+@import "nativewind/theme";
+
+@theme {
+  --color-brand-50: #eef6ff;
+  --color-brand-100: #d9ecff;
+  --color-brand-200: #bcddff;
+  --color-brand-300: #8ec7ff;
+  --color-brand-400: #59a8ff;
+  --color-brand-500: #3388fb;
+  --color-brand-600: #208aef;
+  --color-brand-700: #1a6fdb;
+  --color-brand-800: #1c5bb2;
+  --color-brand-900: #1d4f8c;
+  --color-brand-950: #142f56;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+

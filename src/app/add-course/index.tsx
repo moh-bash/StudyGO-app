@@ -2,11 +2,11 @@ import { Button } from '@/components/ui/button';
 import { palette } from '@/constants/theme';
 import { useCourses } from '@/features/courses/use-courses';
 import { cn } from '@/lib/cn';
+import { useRouter } from 'expo-router';
 import { Check, X } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import { FlatList, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 
 export default function AddCourseScreen() {
   const router = useRouter();

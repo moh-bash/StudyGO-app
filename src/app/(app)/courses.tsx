@@ -1,10 +1,11 @@
-import { Plus } from 'lucide-react-native';
+import { CourseCard } from '@/components/courses/course-card';
+import { palette } from '@/constants/theme';
+import { useCourses } from '@/features/courses/use-courses';
+import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
+import { Plus } from 'lucide-react-native';
 import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CourseCard } from '@/components/courses/course-card';
-import { useCourses } from '@/features/courses/use-courses';
-import { palette } from '@/constants/theme';
 
 export default function CoursesScreen() {
   const router = useRouter();
@@ -14,7 +15,10 @@ export default function CoursesScreen() {
   return (
     <View className="flex-1 bg-white dark:bg-slate-950">
       <View className="flex flex-row justify-between items-center gap-2 px-6 pt-6">
-        <Pressable onPress={() => router.push('/(app)/add-course' as any)}>
+        <Pressable onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          router.push('/add-course' as any)
+          }}>
           <View className="p-2 rounded-full bg-brand-500">
             <Plus color="#fff" size={32} />
           </View>

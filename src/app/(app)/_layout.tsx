@@ -20,7 +20,6 @@ export default function AppLayout() {
         <Tabs.Screen name="index" options={{ title: "الرئيسية" }} />
         <Tabs.Screen name="courses" options={{ title: "المقررات" }} />
         <Tabs.Screen name="account" options={{ title: "الحساب" }} />
-        <Tabs.Screen name="add-course" options={{ href: null }} />
       </Tabs>
     </View>
   );

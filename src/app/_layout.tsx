@@ -17,8 +17,8 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <AuthProvider>
           <OnboardingProvider>
-            <RootNavigator />
             <StatusBar style="auto" />
+            <RootNavigator />
           </OnboardingProvider>
         </AuthProvider>
       </SafeAreaProvider>
@@ -71,6 +71,15 @@ function RootNavigator() {
       </Stack.Protected>
       <Stack.Protected guard={hasOnboarded && canUseApp}>
         <Stack.Screen name="(app)" />
+      </Stack.Protected>
+      <Stack.Protected guard={hasOnboarded && canUseApp}>
+        <Stack.Screen
+          name="add-course"
+          options={{
+            headerShown: false,
+            animation: "slide_from_bottom",
+          }}
+        />
       </Stack.Protected>
       <Stack.Protected guard={hasOnboarded && canUseApp}>
         <Stack.Screen name="course/[id]" />

@@ -14,6 +14,7 @@ export default defineConfig({
   resolve: {
     alias: {
       'expo-constants': fileURLToPath(new URL('./test/stubs/expo-constants.ts', import.meta.url)),
+      'expo-sqlite': fileURLToPath(new URL('./test/stubs/expo-sqlite.ts', import.meta.url)),
     },
   },
   test: {

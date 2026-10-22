@@ -33,6 +33,7 @@
 import { getApiConfig } from '../config';
 import { tokenStorage } from '../storage/token-storage';
 import { ApiError, NetworkError, ResponseParseError } from './errors';
+import type { NetworkFailureKind } from './errors';
 import { isTokenExpiringSoon } from './jwt';
 import type { ApiErrorBody } from './types';
 
@@ -78,6 +79,39 @@ export function setRefreshHandler(handler: RefreshHandler | null): void {
   }
 }
 
+/**
+ * Listener notified after a request reaches the backend and receives a
+ * well-formed HTTP response — *regardless of its status code*. A `2xx` proves
+ * the backend is reachable; a `4xx`/`5xx` also proves it is reachable (the
+ * server answered), so neither is evidence that the *device* is offline.
+ *
+ * This is the single reliable "the backend is reachable" signal: it is fired
+ * only from {@link performFetch} after `fetch` resolves with a real
+ * `Response`, never from the transport-failure (`NetworkError`) path. The auth
+ * layer subscribes to it so a previously recorded offline state is cleared as
+ * soon as any request actually reaches the server.
+ */
+export type BackendReachableListener = () => void;
+const reachableListeners = new Set<BackendReachableListener>();
+
+/** Subscribes to "the backend just answered a request". Returns an unsubscribe. */
+export function onBackendReachable(listener: BackendReachableListener): () => void {
+  reachableListeners.add(listener);
+  return () => {
+    reachableListeners.delete(listener);
+  };
+}
+
+function emitBackendReachable(): void {
+  for (const listener of reachableListeners) {
+    try {
+      listener();
+    } catch {
+      // A subscriber must never break request handling.
+    }
+  }
+}
+
 function refreshOnce(): Promise<string> {
   if (refreshFlight) return refreshFlight;
   if (!refreshHandler) {
@@ -104,6 +138,25 @@ interface RawResult {
   parsed: unknown;
 }
 
+/**
+ * Internal (English) description of a request that produced no response.
+ *
+ * These strings are never shown to the student: the UI wording comes from
+ * `lib/api/connection.ts` / `lib/auth/errors.ts`, which classify the failure
+ * by {@link NetworkFailureKind}. They only exist to make logs and test
+ * failures readable.
+ */
+function messageForFailure(kind: NetworkFailureKind, path: string, timeoutMs: number): string {
+  switch (kind) {
+    case 'timeout':
+      return `Request to ${path} timed out after ${timeoutMs}ms.`;
+    case 'aborted':
+      return `Request to ${path} was aborted before it completed.`;
+    default:
+      return `Request to ${path} failed. Check your connection.`;
+  }
+}
+
 async function performFetch(
   url: string,
   method: HttpMethod,
@@ -114,10 +167,24 @@ async function performFetch(
   timeoutMs: number,
 ): Promise<RawResult> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const onExternalAbort = () => controller.abort();
+  // The three ways a request can end without an HTTP response must stay
+  // distinguishable: only a real transport failure proves the device has no
+  // connection, while our own deadline and a caller-owned abort say nothing
+  // about connectivity. Collapsing all three into one error is what produced
+  // the false "check your internet" warning (Phase 5.2).
+  let timedOut = false;
+  let aborted = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const onExternalAbort = () => {
+    aborted = true;
+    controller.abort();
+  };
   if (signal) {
     if (signal.aborted) {
+      aborted = true;
       controller.abort();
     } else {
       signal.addEventListener('abort', onExternalAbort);
@@ -130,11 +197,18 @@ async function performFetch(
     response = await fetch(url, { method, headers, body, signal: controller.signal });
     rawText = await response.text();
   } catch (cause) {
-    throw new NetworkError(`Request to ${path} failed. Check your connection.`, cause);
+    const kind: NetworkFailureKind = timedOut ? 'timeout' : aborted ? 'aborted' : 'transport';
+    throw new NetworkError(messageForFailure(kind, path, timeoutMs), cause, kind);
   } finally {
     clearTimeout(timeoutId);
     signal?.removeEventListener('abort', onExternalAbort);
   }
+
+  // The backend answered (even if with an error status): the device is online
+  // and the server is reachable. This must be recorded *before* a non-2xx is
+  // turned into an ApiError below, so a real API error never leaves a stale
+  // "offline" state behind, and a later success can clear it.
+  emitBackendReachable();
 
   let parsed: unknown;
   if (rawText.length > 0) {
@@ -156,7 +230,10 @@ async function performFetch(
  *
  * @throws ConfigError     missing/invalid configuration
  * @throws TokenStorageError when an authenticated request needs the token store
- * @throws NetworkError    transport failure, offline, or timeout
+ * @throws NetworkError    the request produced no response: `kind` tells
+ *                         whether it was a genuine transport failure
+ *                         (`'transport'`), our own deadline (`'timeout'`) or a
+ *                         caller abort (`'aborted'`)
  * @throws ResponseParseError malformed 2xx body
  * @throws ApiError        non-2xx response
  */

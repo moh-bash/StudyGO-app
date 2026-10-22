@@ -52,9 +52,11 @@ function RootNavigator() {
     return <AppLoader />;
   }
 
-  // Signed-in *or* local-only (offline with a stored, non-rejected session) both
-  // open the app; only an explicit signed-out state goes to the auth screens.
-  const canUseApp = status === "authenticated" || status === "offline";
+  // Signed-in *or* local-only (offline/server-error with a stored,
+  // non-rejected session) both open the app; only an explicit signed-out state
+  // goes to the auth screens.
+  const canUseApp =
+    status === "authenticated" || status === "offline" || status === "server-error";
 
   return (
     <Stack

@@ -22,9 +22,13 @@ npx tsc --noEmit          # typecheck
 npx expo-doctor           # diagnose dependency/config issues
 npx expo install <pkg>    # ALWAYS use for deps — resolves SDK-compatible versions
 npx expo install --fix    # fix incompatible versions
+
+# focused runs
+npx vitest run src/lib/api/client.test.ts   # single test file
+npx expo lint src/lib                       # lint a single directory (paths before `--`)
 ```
 
-Run `npm test`, `npx tsc --noEmit`, and `npm run lint` before declaring a task done.
+Run `npm test`, `npx tsc --noEmit`, and `npm run lint` before declaring a task done. There are **no CI workflows** (`.github/` is empty) — your local run is the only gate.
 
 `expo lint` **caches results by default**. After adding files, changing module resolution, or installing packages, stale `import/no-unresolved` errors can appear. Re-run with `npx expo lint --no-cache` to get the truth.
 
@@ -51,14 +55,14 @@ The app talks directly to the backend (no BFF). Origin: `https://studygo-api.onr
 ## Auth & session (`src/lib/auth/`)
 
 - **Single auth stack.** `AuthContext.tsx` (`useAuth`) is the only provider; it is backed by `session.ts` (token lifecycle, refresh, restore) and `response.ts` / `validation.ts` / `errors.ts`. The old mock `src/features/auth/session-provider.tsx` has been removed — do not reintroduce a second stack.
-- State machine: `initializing` → `authenticated` | `offline` | `unauthenticated`. `offline` means the backend could not be reached but stored tokens were retained (the UI may continue with cached data); `unauthenticated` means no session, or the backend explicitly rejected it.
+- State machine: `initializing` → `authenticated` | `offline` | `server-error` | `unauthenticated`. `offline` = the device could not reach the backend (transport failure) but stored tokens were retained (the UI may continue with cached data); `server-error` = the backend *answered* but session validation failed (5xx) — tokens retained, but the UI must never claim a connectivity problem; `unauthenticated` = no session, or the backend explicitly rejected it. Object identity of `user` is kept stable across identical validations (`user-equality.ts`) — do not `setUser` a fresh object unconditionally, it restarts memoized effects (the Phase 4.1 refetch-loop fix).
 - Refresh is **single-flight** and rotates tokens; the presented refresh token is revoked, so it is never replayed. An `epoch` counter discards a refresh that resolves after logout.
 - `onSessionInvalidated` lets a rejected *background* refresh flip the UI back to signed-out (see the subscription in `AuthContext.tsx`).
 - Onboarding is **separate** from auth: `src/features/onboarding/onboarding-provider.tsx` (`useOnboarding`) stores a device flag in AsyncStorage under `studygo.onboarded`.
 
 ## Storage
 
-- `src/lib/storage/token-storage.ts` — `expo-secure-store` only (OS keystore). Never write tokens to AsyncStorage/SQLite/logs; there is no insecure fallback (it throws `TokenStorageError`).
+- `src/lib/storage/token-storage.ts` — `expo-secure-store` (OS keystore) on native; a namespaced `localStorage` adapter **on web only** (Phase 4.1, explicitly approved), because expo-secure-store ships no web implementation and the browser could never persist a session. Same keys, same atomic-pair rollback, and any storage failure still throws `TokenStorageError` — no silent failure path. Never write tokens to AsyncStorage/SQLite/logs.
 - `src/lib/storage/profile-cache.ts` — non-sensitive user snapshot in AsyncStorage (`studygo.profile`), used to render the app offline; cleared on logout/rejection.
 - `src/lib/db/` — local `expo-sqlite` database `studygo.db` caching the full program catalog (`catalog_meta`, `semesters`, `subjects`, `professors`, `sections`, `schedules`) and the locally saved course selections (`course_selections`). The DB is cleared on logout or session invalidation.
 
@@ -66,8 +70,8 @@ The app talks directly to the backend (no BFF). Origin: `https://studygo-api.onr
 
 - Routes live in `src/app/**`. Root `src/app/_layout.tsx` provides `AuthProvider` → `OnboardingProvider` and gates screens with `Stack.Protected`.
 - **Boot gate**: while the onboarding flag and session restore are resolving, root renders `<AppLoader />` (no navigator) and the native splash stays up; the splash is hidden only once boot completes. This is what prevents the onboarding/welcome screen from flashing before the real route is known.
-- Guards: `!hasOnboarded` → `onboarding`; `hasOnboarded && !canUseApp` → `(auth)`; `hasOnboarded && canUseApp` → `(app)` (where `canUseApp = authenticated || offline`).
-- Groups: `(auth)` = login / sign-up; `(app)` = `index` / `courses` / `account`, rendered with the custom `src/components/floating-tab-bar.tsx` (not the default tab bar) and a shared `OfflineBanner`. The course detail screen is at `course/[id]` as a sibling of `(app)`.
+- Guards: `!hasOnboarded` → `onboarding`; `hasOnboarded && !canUseApp` → `(auth)`; `hasOnboarded && canUseApp` → `(app)`, `add-course`, `course/[id]` (where `canUseApp = authenticated || offline`). New screens outside `(auth)` must be added to a `Stack.Protected` guard or they will be reachable when signed out.
+- Groups: `(auth)` = login / sign-up; `(app)` = `index` / `courses` / `account`, rendered with the custom `src/components/floating-tab-bar.tsx` (not the default tab bar) and a shared `OfflineBanner`. `course/[id]` and `add-course/index` are siblings of `(app)`.
 - `.expo/types/router.d.ts` is generated (gitignored) and often stale — never edit it.
 
 ## Styling (NativeWind v5 RC + Tailwind v4)
@@ -86,17 +90,13 @@ The app talks directly to the backend (no BFF). Origin: `https://studygo-api.onr
 ## Conventions
 
 - Path aliases: `@/*` → `./src/*`, `@/assets/*` → `./assets/*` (`tsconfig.json`).
-- `.env` sets `EXPO_PUBLIC_API_BASE_URL`; `expo start` / `expo lint` auto-load it. Only `EXPO_PUBLIC_*` (non-secret) values belong there.
+- `.env` sets `EXPO_PUBLIC_API_BASE_URL`; `expo start` / `expo lint` auto-load it (you'll see `env: load .env` in lint output). `.env` **is tracked in git** — it must only ever contain non-secret `EXPO_PUBLIC_*` values (secrets belong in `.env*.local`, which is gitignored).
 - User-facing copy is Arabic (see "Language" above), including the `(auth)` screens and the messages under `src/lib/auth/`. Keep brand/product names as-is.
 - React Compiler is on: `react-hooks/set-state-in-effect` fails the build. Fetch in an effect without writing state synchronously (write only after `await`, guard with an `active` flag).
 
 ## Native builds (CNG + EAS)
 
 - `ios/` and `android/` do not exist and are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
-- Expo Go only bundles its own native modules. After adding a library with native code (e.g. `expo-secure-store`, `expo-sqlite`), use a dev build: `npx expo run:ios|android`, or `eas build --profile development`.
+- Expo Go **does** include the first-party native modules this app uses (`expo-sqlite`, `expo-secure-store` — both are tagged "Included in Expo Go" in the docs), so the current dependency set runs in Expo Go. A dev build (`npx expo run:ios|android` or `eas build --profile development`) is needed only after adding a **third-party** library with custom native code; check its "Expo Go" tag on React Native Directory first.
 - Prefer Expo modules over third-party libraries; check available skills before adding deps. Docs: `https://docs.expo.dev/versions/latest/index.md`.
 - EAS for cloud build/submit/OTA: run as `npx eas-cli@latest <command>`. Docs: `https://docs.expo.dev/eas/index.md`.
-
-## README is stale
-
-`README.md` describes an old flat layout (`app/`, `constants/`, `database/`) and AsyncStorage/SQLite/offline-sync features that are not in this tree. Trust the code and this file over the README.

@@ -1,5 +1,5 @@
 # 🎓 StudyGO
-StudyGO is a mobile application built with React Native and Expo, designed to manage and calculate university grades 💯
+StudyGO is an Arabic-first mobile app built with React Native and Expo that lets university students browse their program's academic catalog and manage their course selections — online or offline.
 
 <div align="center">
 <hr/>
@@ -12,111 +12,71 @@ StudyGO is a mobile application built with React Native and Expo, designed to ma
 <img src="./assets/images/cavor (2).png" />
 </div>
 
-## 🚀 Features
-- "Grade Tracking": Easily input and save your university grades for different samesters
-- "GPA Calculation": Automatically calculate your GPA based on the grades you input
-- "User-Friendly Interface": Intuitive and easy-to-use interface for seamless navigation
-
 ## 📱 Download
 You can Download the app from the following link: [StudyX](https://expo.dev/accounts/moh-bash/projects/studyx/builds/0dcc0db1-9a5a-4ee4-a798-fdbcd9d14462)
 
-## 📁 Directory Structure
-```
-StudyX/
-├─ app/
-│  ├─ (tabs)/
-│  │  ├─ _layout.jsx
-│  │  ├─ home.jsx
-│  │  ├─ settings.jsx
-│  │  └─ subject.jsx
-│  ├─ components/
-│  │  └─ ListItem.jsx
-│  ├─ onboarding/
-│  │  ├─ components/
-│  │  │  ├─ NextButton.jsx
-│  │  │  ├─ OnboardingCard.jsx
-│  │  │  └─ Pagination.jsx
-│  │  ├─ _layout.jsx
-│  │  └─ index.jsx
-│  ├─ utils/
-│  ├─ _layout.jsx
-│  ├─ add-subject.jsx
-│  └─ index.jsx
-├─ constants/
-│  └─ data.js
-├─ database/
-│  ├─ repositories/
-│  │  └─ grades.repository.js
-│  ├─ index.js
-│  └─ schema.js
-|─ assets/
-|  ├─ images/
-|  └─ fonts/
-├─ .gitignore
-├─ app.json
-├─ babel.config.js
-├─ eas.json
-├─ eslint.config.js
-├─ global.css
-├─ metro.config.js
-├─ nativewind-env.d.ts
-├─ package.json
-├─ README.md
-├─ tailwind.config.js
-└─ tsconfig.json
-```
+## ✨ Features
+- **Onboarding → authentication**: welcome slides, then sign up / log in against the StudyGO backend. Registration includes picking a university program (`GET /programs/registration`).
+- **Academic catalog**: semesters, subjects (credit hours, project/exam weights, prerequisites), sections, professors, and schedules for your program.
+- **Course selections**: pick your subjects per semester; selections are saved locally and survive restarts.
+- **Course details**: subject info plus its sections, in a dedicated screen.
+- **Offline mode**: the catalog is cached in SQLite, so the app renders from cache instantly and keeps working when the backend is unreachable (stored session is kept, an offline banner offers reconnect).
+- **Arabic-first UI with dark mode**: all user-facing copy is in Arabic; the visual theme is tokenized via NativeWind/Tailwind.
+
+## 🗄️ Data & offline behavior
+The app talks directly to the backend at `https://studygo-api.onrender.com` (all routes under `/api/v1`, configured in `.env` / `app.json`).
+
+- After sign-in the catalog is fetched from `GET /api/v1/catalog` and written to the local SQLite database `studygo.db` in a single transaction (full reconciliation — there is no incremental sync endpoint). It is also read on screen load, so cached data shows immediately.
+- Local tables: `catalog_meta`, `semesters`, `subjects`, `professors`, `sections`, `schedules`, and `course_selections` (migrations are versioned via `PRAGMA user_version`).
+- Course selections are **local-only** today; the enrollment API bindings (`src/lib/api/enrollments.ts`) exist but are not wired to a screen yet.
+- Access/refresh tokens live in the OS keystore (`expo-secure-store`) with transparent refresh; the profile snapshot and the whole database are cleared on sign-out or session rejection.
 
 ## 🔧 Tech stack
-- React Native
-- Expo
-- NativeWind
-- SQLite
-- AsyncStorage
-- Expo Router
+- Expo SDK 57 / React Native 0.86 / React 19.2, TypeScript (strict)
+- Expo Router (typed routes, React Compiler enabled)
+- NativeWind v5 RC + Tailwind v4 (theme tokens in `src/app/global.css`)
+- expo-sqlite (local cache), expo-secure-store (tokens)
+- Vitest for unit tests
 
-## 🗄️ Database Schema
-The following diagram illustrates the database architecture and the relationships between the tables used in the application:
+## 📁 Project structure
+```
+src/
+├─ app/              # Expo Router routes (file-based)
+│  ├─ (auth)/        #   login, sign-up
+│  ├─ (app)/         #   index (home), courses, account — custom floating tab bar
+│  ├─ add-course/    #   semester/subject picker
+│  ├─ course/[id]    #   course detail
+│  ├─ _layout.tsx    #   providers, route guards, splash/boot gate
+│  └─ global.css     #   Tailwind v4 @theme tokens
+├─ components/       # shared UI (tab bar, course cards, ui/* primitives)
+├─ features/         # onboarding + courses hooks
+├─ lib/
+│  ├─ api/           # typed fetch client + auth/catalog/programs endpoints
+│  ├─ auth/          # AuthContext, session/refresh, validation
+│  ├─ db/            # expo-sqlite stores (catalog cache, selections)
+│  └─ storage/       # SecureStore tokens, profile cache
+└─ constants/        # onboarding slides, color palette
+assets/
+```
 
-![Database ER Diagram](./assets//images/DatabaseSchema%20.png)
-
-The bundled academic data files are not used at runtime. Academic subjects,
-semesters, professors, sections, prerequisites, and schedules are supplied by
-the authenticated backend and cached in SQLite.
-
-## 🔄 Offline synchronization
-After authentication, the app periodically retrieves the authenticated user's
-catalog from `GET /api/v1/catalog` and applies it to SQLite in one transaction.
-Synchronization also runs when the app returns to the foreground. The SQLite
-schema records a per-account checkpoint, remote identifiers, and a durable
-outbox for local enrollment operations, so local writes survive restarts.
-Catalog snapshots currently use full reconciliation because the backend does
-not expose a change cursor or deletion feed. Enrollment operations that do not
-identify a server section are retained as explicit conflicts rather than being
-reported as synchronized.
-
-## ⏬ Installation
-To run the app locally, follow these steps:
-1. Clone the repository: 
-   
+## 🚀 Getting started
+1. Clone and install:
    ```bash
    git clone https://github.com/moh-bash/StudyGO-app.git
-   ```
-2. Navigate to the project directory:
-   
-   ```bash
    cd StudyGO-app
-   ```
-3. Install dependencies:
-   ```bash
    npm install
    ```
-4. Start the development server:
+2. The tracked `.env` already sets `EXPO_PUBLIC_API_BASE_URL` (production); edit it to point at a local backend if needed (absent/empty values fall back to `expo.extra.apiBaseUrl` in `app.json`).
+3. Start the dev server:
    ```bash
    npm start
    ```
+   Useful checks before pushing: `npm test`, `npx tsc --noEmit`, `npm run lint`.
+
+> **Note:** Everything the app uses today runs in **Expo Go** (`expo-sqlite` and `expo-secure-store` are both included in Expo Go per the Expo docs). A development build (`npx expo run:ios` / `run:android`) is only needed if you add a third-party library with custom native code — check the ["Expo Go" tag on React Native Directory](https://reactnative.directory/?expoGo=true) first.
 
 ## 🤝 Contributing
-If you would like to contribute and add features to the app, please follow these steps:
+To contribute and add features, please follow these steps:
 1. Fork the repository
 2. Create a new branch
 3. Make your changes

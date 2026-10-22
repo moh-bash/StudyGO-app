@@ -1,5 +1,5 @@
+import { useThemeColors } from "@/constants/theme";
 import { cn } from "@/lib/cn";
-import { palette } from "@/constants/theme";
 import { Check, ChevronDown, X, type LucideIcon } from "lucide-react-native";
 import { useState } from "react";
 import {
@@ -52,6 +52,7 @@ export function SelectField({
   emptyText = "لا توجد خيارات متاحة.",
 }: Props) {
   const insets = useSafeAreaInsets();
+  const colors = useThemeColors();
   const [open, setOpen] = useState(false);
   const selected = options.find((option) => option.value === value) ?? null;
   const isDisabled = disabled || loading;
@@ -59,34 +60,44 @@ export function SelectField({
   return (
     <View className="w-full gap-2">
       {label ? (
-        <Text className="text-sm font-medium text-slate-700 dark:text-slate-300">{label}</Text>
+        <Text className="text-right text-sm font-medium text-slate-700 dark:text-slate-300">
+          {label}
+        </Text>
       ) : null}
       <Pressable
+        accessibilityRole="combobox"
+        accessibilityState={{ expanded: open, disabled: isDisabled }}
+        accessibilityLabel={label ?? placeholder}
+        accessibilityValue={{ text: selected?.label ?? placeholder }}
         onPress={() => setOpen(true)}
         disabled={isDisabled}
         className={cn(
-          "flex-row items-center gap-3 rounded-2xl border bg-white px-4 py-3 dark:bg-slate-900",
+          "min-h-[52px] flex-row items-center gap-3 rounded-2xl border bg-white px-4 py-2.5 dark:bg-slate-900",
           error ? "border-red-500" : "border-slate-200 dark:border-slate-700",
           isDisabled ? "opacity-60" : "active:border-brand-500",
         )}
       >
-        {Icon ? <Icon color={palette.slate400} size={20} /> : null}
+        {/* The chevron trails on the left and the adornment leads on the
+            right, matching the Arabic reading order. */}
+        {loading ? (
+          <ActivityIndicator size="small" color={colors.accent} />
+        ) : (
+          <ChevronDown color={colors.slate400} size={20} />
+        )}
         <Text
           className={cn(
-            "flex-1 text-base",
+            "flex-1 text-right text-base leading-6",
             selected ? "text-slate-900 dark:text-white" : "text-slate-400",
           )}
           numberOfLines={1}
         >
           {selected ? selected.label : loading ? "جارٍ التحميل…" : placeholder}
         </Text>
-        {loading ? (
-          <ActivityIndicator size="small" color={palette.brand600} />
-        ) : (
-          <ChevronDown color={palette.slate400} size={20} />
-        )}
+        {Icon ? <Icon color={colors.slate400} size={20} /> : null}
       </Pressable>
-      {error ? <Text className="text-xs text-red-500">{error}</Text> : null}
+      {error ? (
+        <Text className="text-right text-xs leading-4 text-red-500">{error}</Text>
+      ) : null}
 
       <Modal
         visible={open}
@@ -94,19 +105,30 @@ export function SelectField({
         animationType="slide"
         onRequestClose={() => setOpen(false)}
       >
-        <Pressable className="flex-1 justify-end bg-black/40" onPress={() => setOpen(false)}>
+        <Pressable
+          className="flex-1 justify-end bg-black/40"
+          accessibilityRole="button"
+          accessibilityLabel="إغلاق القائمة"
+          onPress={() => setOpen(false)}
+        >
           <Pressable
             className="rounded-t-3xl bg-white dark:bg-slate-900"
             style={{ paddingBottom: Math.max(insets.bottom, 16) }}
             onPress={(event) => event.stopPropagation()}
           >
             <View className="flex-row items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-slate-800">
-              <Text className="text-base font-semibold text-slate-900 dark:text-white">
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="إغلاق"
+                onPress={() => setOpen(false)}
+                hitSlop={8}
+                className="h-11 w-11 items-center justify-center"
+              >
+                <X color={colors.slate400} size={20} />
+              </Pressable>
+              <Text className="flex-1 text-right text-base font-semibold text-slate-900 dark:text-white">
                 {label ?? placeholder}
               </Text>
-              <Pressable onPress={() => setOpen(false)} hitSlop={8}>
-                <X color={palette.slate400} size={20} />
-              </Pressable>
             </View>
             {options.length === 0 ? (
               <Text className="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
@@ -121,13 +143,15 @@ export function SelectField({
                   const isSelected = item.value === value;
                   return (
                     <Pressable
+                      accessibilityRole="menuitem"
+                      accessibilityState={{ selected: isSelected }}
                       onPress={() => {
                         onSelect(item.value);
                         setOpen(false);
                       }}
-                      className="flex-row items-center justify-between px-6 py-4 active:bg-slate-50 dark:active:bg-slate-800"
+                      className="flex-row items-center gap-3 px-6 py-4 active:bg-slate-50 dark:active:bg-slate-800"
                     >
-                      <View className="flex-1 gap-0.5">
+                      <View className="flex-1 items-end gap-0.5">
                         <Text className="text-base text-slate-900 dark:text-white">{item.label}</Text>
                         {item.hint ? (
                           <Text className="text-xs text-slate-500 dark:text-slate-400">
@@ -135,7 +159,7 @@ export function SelectField({
                           </Text>
                         ) : null}
                       </View>
-                      {isSelected ? <Check color={palette.brand600} size={20} /> : null}
+                      {isSelected ? <Check color={colors.accent} size={20} /> : null}
                     </Pressable>
                   );
                 }}

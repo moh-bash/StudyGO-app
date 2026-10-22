@@ -14,12 +14,58 @@ export class ConfigError extends Error {
   }
 }
 
+/**
+ * Why a request failed *before* any HTTP response was received.
+ *
+ * The distinction matters because only one of these kinds is evidence that the
+ * device could not reach the server:
+ *
+ * - `transport`: the request never reached a server (no network, DNS failure,
+ *   connection refused). This is the **only** kind that may be worded as
+ *   "check your internet connection".
+ * - `timeout`: the request was still unanswered when our own deadline
+ *   expired. The backend is reachable but slow/overloaded — saying "you are
+ *   offline" here is a lie (the Phase 5.2 false-warning defect).
+ * - `aborted`: the request was cancelled before it completed (a caller-owned
+ *   signal, e.g. the startup validation deadline). It says nothing about
+ *   connectivity at all.
+ */
+export type NetworkFailureKind = 'transport' | 'timeout' | 'aborted';
+
 /** The network request never completed (offline, DNS failure, timeout...). */
 export class NetworkError extends Error {
-  constructor(message: string, readonly cause?: unknown) {
+  /**
+   * @param kind what actually happened on the wire. Defaults to `transport`
+   *   so an error constructed without more detail keeps the strictest (and
+   *   only connectivity-proving) meaning.
+   */
+  constructor(
+    message: string,
+    readonly cause?: unknown,
+    readonly kind: NetworkFailureKind = 'transport',
+  ) {
     super(message);
     this.name = 'NetworkError';
   }
+}
+
+/**
+ * The single source of truth for "is this a genuine connectivity failure?".
+ *
+ * Only a `transport` failure proves the device could not reach the backend.
+ * A timeout or an abort must never be presented as an internet problem, so
+ * every caller classifies through this helper instead of re-deriving the rule.
+ */
+export function isTransportFailure(error: unknown): error is NetworkError {
+  return error instanceof NetworkError && error.kind === 'transport';
+}
+
+/**
+ * The failure kind of a network error, or `null` when the error is not a
+ * network error at all (the backend answered, or the failure is a bug).
+ */
+export function networkFailureKind(error: unknown): NetworkFailureKind | null {
+  return error instanceof NetworkError ? error.kind : null;
 }
 
 /**

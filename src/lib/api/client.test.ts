@@ -4,8 +4,9 @@
  * Secure storage and `fetch` are mocked; no real backend or device is used.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ResponseParseError } from './errors';
-import { apiRequest, setRefreshHandler } from './client';
+import { NetworkError, ResponseParseError } from './errors';
+import { apiRequest, onBackendReachable, setRefreshHandler } from './client';
+import { resetApiConfigCache } from '../config';
 
 const store = vi.hoisted(() => ({
   access: null as string | null,
@@ -76,10 +77,13 @@ beforeEach(() => {
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   setRefreshHandler(null);
   process.env.EXPO_PUBLIC_API_BASE_URL = 'http://test.local';
+  process.env.EXPO_PUBLIC_API_TIMEOUT_MS = '15000';
+  resetApiConfigCache();
 });
 
 afterEach(() => {
   setRefreshHandler(null);
+  resetApiConfigCache();
 });
 
 function authHeaderOfCall(index: number): string | undefined {
@@ -265,5 +269,144 @@ describe('apiRequest proactive refresh', () => {
 
     expect(handler).not.toHaveBeenCalled();
     expect(authHeaderOfCall(0)).toBe(`Bearer ${expiring}`);
+  });
+});
+
+describe('transport failure kinds', () => {
+  function abortError(): Error {
+    const error = new Error('The operation was aborted.');
+    error.name = 'AbortError';
+    return error;
+  }
+
+  /** A fetch that never answers and only settles when the signal aborts. */
+  function hangingFetch(): void {
+    fetchMock.mockImplementationOnce(
+      (_url: unknown, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) {
+            reject(new Error('expected an abort signal'));
+            return;
+          }
+          if (signal.aborted) {
+            reject(abortError());
+            return;
+          }
+          signal.addEventListener('abort', () => reject(abortError()));
+        }),
+    );
+  }
+
+  it('marks a genuine fetch rejection as a transport failure', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    const error = await apiRequest('/thing').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect((error as NetworkError).kind).toBe('transport');
+  });
+
+  it('marks the client-side deadline as a timeout, NOT as a transport failure', async () => {
+    // The backend is reachable but slow: the request ran out of time. This must
+    // never be classified as "the device has no connection" (Phase 5.2).
+    process.env.EXPO_PUBLIC_API_TIMEOUT_MS = '20';
+    resetApiConfigCache();
+    hangingFetch();
+
+    const error = await apiRequest('/slow').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect((error as NetworkError).kind).toBe('timeout');
+    expect((error as NetworkError).kind).not.toBe('transport');
+  });
+
+  it('marks a caller abort as an abort, NOT as a transport failure', async () => {
+    const controller = new AbortController();
+    hangingFetch();
+
+    const pending = apiRequest('/cancelled', { signal: controller.signal }).catch(
+      (e: unknown) => e,
+    );
+    controller.abort();
+    const error = await pending;
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect((error as NetworkError).kind).toBe('aborted');
+    expect((error as NetworkError).kind).not.toBe('transport');
+  });
+
+  it('marks an already-aborted signal as an abort without waiting for the deadline', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    hangingFetch();
+
+    const error = await apiRequest('/cancelled', { signal: controller.signal }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect((error as NetworkError).kind).toBe('aborted');
+  });
+
+  it('does NOT report the backend as reachable when the request timed out', async () => {
+    // A timeout means we got no answer at all: it is not proof that the
+    // backend is up, so the recovery signal must not fire.
+    process.env.EXPO_PUBLIC_API_TIMEOUT_MS = '20';
+    resetApiConfigCache();
+    const listener = vi.fn();
+    const unsubscribe = onBackendReachable(listener);
+    hangingFetch();
+
+    await expect(apiRequest('/slow')).rejects.toBeInstanceOf(NetworkError);
+
+    expect(listener).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+});
+
+describe('onBackendReachable', () => {
+  it('notifies listeners when the backend answers with a 2xx', async () => {
+    const listener = vi.fn();
+    const unsubscribe = onBackendReachable(listener);
+    fetchMock.mockResolvedValueOnce(json(200, { ok: true }));
+
+    await apiRequest('/thing');
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('notifies listeners when the backend answers with a 5xx (server was reachable)', async () => {
+    const listener = vi.fn();
+    const unsubscribe = onBackendReachable(listener);
+    fetchMock.mockResolvedValueOnce(json(500, err(500)));
+
+    await expect(apiRequest('/thing')).rejects.toMatchObject({ statusCode: 500 });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('does NOT notify listeners when the transport itself fails', async () => {
+    const listener = vi.fn();
+    const unsubscribe = onBackendReachable(listener);
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(apiRequest('/thing')).rejects.toBeInstanceOf(NetworkError);
+
+    expect(listener).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('stops notifying after unsubscribe', async () => {
+    const listener = vi.fn();
+    const unsubscribe = onBackendReachable(listener);
+    unsubscribe();
+
+    fetchMock.mockResolvedValueOnce(json(200, { ok: true }));
+    await apiRequest('/thing');
+
+    expect(listener).not.toHaveBeenCalled();
   });
 });

@@ -17,6 +17,8 @@ export const PASSWORD_MAX = 72;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_PATTERN = /^(?=.*[A-Za-z])(?=.*\d).+$/;
+/** Mirrors the backend `PHONE_REGEX` (`register.dto.ts`): 5-20 digits, optional +. */
+const PHONE_PATTERN = /^\+?\d(?:[\s\-().]?\d){4,19}$/;
 
 export function validateFullName(value: string): string | null {
   const trimmed = value.trim();
@@ -59,6 +61,21 @@ export function validatePassword(value: string): string | null {
   }
   if (!PASSWORD_PATTERN.test(value)) {
     return 'يجب أن تحتوي كلمة المرور على حرف ورقم معًا';
+  }
+  return null;
+}
+
+/**
+ * Phone is optional: an empty/whitespace value is valid (the field is simply
+ * not sent). A non-empty value must match the backend rule.
+ */
+export function validatePhone(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  if (!PHONE_PATTERN.test(trimmed)) {
+    return 'الرجاء إدخال رقم هاتف صحيح (من 5 إلى 20 رقمًا)';
   }
   return null;
 }

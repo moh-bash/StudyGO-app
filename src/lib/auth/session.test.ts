@@ -66,6 +66,7 @@ const USER: User = {
   status: 'ACTIVE',
   profileImageUrl: null,
   studentUniversityId: null,
+  phone: null,
   programId: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
@@ -87,14 +88,43 @@ function json(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
-type MockResponse = { kind: 'http'; status: number; body: unknown } | { kind: 'network' };
+type MockResponse =
+  | { kind: 'http'; status: number; body: unknown }
+  | { kind: 'network' }
+  | { kind: 'hang' };
 const routes = new Map<string, MockResponse[]>();
 
 function on(method: string, suffix: string, ...responses: MockResponse[]) {
   routes.set(`${method.toUpperCase()} ${suffix}`, responses.slice());
 }
 
-const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+/** An `AbortError`-shaped rejection, as the platform produces on abort. */
+function abortError(): Error {
+  const error = new Error('The operation was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+/**
+ * A request that never answers and only settles when its signal aborts —
+ * the shape of a backend that is reachable but slower than the deadline.
+ */
+function hangUntilAborted(init?: RequestInit): Promise<Response> {
+  return new Promise<Response>((_resolve, reject) => {
+    const signal = init?.signal;
+    if (!signal) {
+      reject(new Error('expected an abort signal'));
+      return;
+    }
+    if (signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    signal.addEventListener('abort', () => reject(abortError()));
+  });
+}
+
+function mockFetch(input: unknown, init?: RequestInit): Promise<Response> {
   const url = String(input);
   const method = (init?.method ?? 'GET').toUpperCase();
   for (const [key, queue] of routes) {
@@ -107,11 +137,16 @@ const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
       if (next.kind === 'network') {
         throw new TypeError('Network request failed');
       }
-      return json(next.status, next.body);
+      if (next.kind === 'hang') {
+        return hangUntilAborted(init);
+      }
+      return Promise.resolve(json(next.status, next.body));
     }
   }
   throw new Error(`No mock route for ${method} ${url}`);
-});
+}
+
+const fetchMock = vi.fn(mockFetch);
 
 function callsTo(method: string, suffix: string): number {
   return fetchMock.mock.calls.filter((call) => {
@@ -127,24 +162,7 @@ beforeEach(() => {
   profile.value = null;
   routes.clear();
   fetchMock.mockReset();
-  fetchMock.mockImplementation(async (input: unknown, init?: RequestInit) => {
-    const url = String(input);
-    const method = (init?.method ?? 'GET').toUpperCase();
-    for (const [key, queue] of routes) {
-      const [m, suffix] = key.split(' ');
-      if (m === method && url.endsWith(suffix)) {
-        const next = queue.shift();
-        if (!next) {
-          throw new Error(`No queued response for ${method} ${url}`);
-        }
-        if (next.kind === 'network') {
-          throw new TypeError('Network request failed');
-        }
-        return json(next.status, next.body);
-      }
-    }
-    throw new Error(`No mock route for ${method} ${url}`);
-  });
+  fetchMock.mockImplementation(mockFetch);
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   process.env.EXPO_PUBLIC_API_BASE_URL = 'http://test.local';
 });
@@ -230,6 +248,31 @@ describe('signUp', () => {
     expect(body).not.toHaveProperty('role');
   });
 
+  it('sends an optional phone when provided and omits it when empty', async () => {
+    on('POST', '/auth/register', { kind: 'http', status: 201, body: authBody('a4', 'r4') });
+
+    await session.signUp({
+      fullName: 'Layla Haddad',
+      email: 'layla@example.com',
+      password: 'Str0ngPass',
+      phone: '  0512345678  ',
+      programId: 'program-uuid-1',
+    });
+    let body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body.phone).toBe('0512345678');
+
+    on('POST', '/auth/register', { kind: 'http', status: 201, body: authBody('a5', 'r5') });
+    await session.signUp({
+      fullName: 'Layla Haddad',
+      email: 'layla@example.com',
+      password: 'Str0ngPass',
+      phone: '   ',
+      programId: 'program-uuid-1',
+    });
+    body = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body));
+    expect(body).not.toHaveProperty('phone');
+  });
+
   it('does not fabricate a session when registration fails', async () => {
     on('POST', '/auth/register', { kind: 'http', status: 409, body: err(409, 'email exists') });
 
@@ -307,15 +350,106 @@ describe('restoreSession', () => {
     expect(store.refresh).toBe('r1');
   });
 
-  it('treats a 5xx as offline without attempting a refresh', async () => {
+  it('reports server-error (never offline) when the backend misses the startup deadline', async () => {
+    // The Phase 5.2 defect: a slow (cold-start) backend aborted the startup
+    // validation after RESTORE_TIMEOUT_MS and the app claimed the device had
+    // no internet connection. An unanswered request proves nothing about
+    // connectivity, so it must be reported as a server problem.
+    vi.useFakeTimers();
+    try {
+      store.access = 'a1';
+      store.refresh = 'r1';
+      profile.value = USER;
+      on('GET', '/auth/me', { kind: 'hang' });
+
+      const pending = session.restoreSession();
+      await vi.advanceTimersByTimeAsync(6_000);
+      const outcome = await pending;
+
+      expect(outcome.state).toBe('server-error');
+      expect(outcome).toHaveProperty('user', USER);
+      expect(store.access).toBe('a1');
+      expect(store.refresh).toBe('r1');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports server-error (never offline) when the refresh attempt misses the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      store.access = 'expired';
+      store.refresh = 'r1';
+      profile.value = USER;
+      on('GET', '/auth/me', { kind: 'http', status: 401, body: err(401) });
+      on('POST', '/auth/refresh', { kind: 'hang' });
+
+      const pending = session.restoreSession();
+      await vi.advanceTimersByTimeAsync(20_000);
+      const outcome = await pending;
+
+      expect(outcome.state).toBe('server-error');
+      expect(store.access).toBe('expired');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('classifies a 5xx as server-error, never as offline, and keeps tokens', async () => {
+    // The server ANSWERED with 500: the device is online. Reporting this as
+    // "offline" produced the false connectivity warning (Phase 4.1 bug).
     store.access = 'a1';
     store.refresh = 'r1';
+    profile.value = USER;
     on('GET', '/auth/me', { kind: 'http', status: 500, body: err(500) });
 
     const outcome = await session.restoreSession();
 
-    expect(outcome.state).toBe('offline');
+    expect(outcome.state).toBe('server-error');
+    expect(outcome).toHaveProperty('user', USER);
+    expect(store.access).toBe('a1');
+    expect(store.refresh).toBe('r1');
     expect(callsTo('POST', '/auth/refresh')).toBe(0);
+  });
+
+  it('classifies a malformed 2xx body as server-error, not offline', async () => {
+    store.access = 'a1';
+    store.refresh = 'r1';
+    profile.value = USER;
+    on('GET', '/auth/me', { kind: 'http', status: 200, body: { unexpected: true } });
+
+    const outcome = await session.restoreSession();
+
+    expect(outcome.state).toBe('server-error');
+    expect(store.access).toBe('a1');
+  });
+
+  it('reports offline only when the refresh attempt itself cannot reach the network', async () => {
+    store.access = 'expired';
+    store.refresh = 'r1';
+    profile.value = USER;
+    on('GET', '/auth/me', { kind: 'http', status: 401, body: err(401) });
+    on('POST', '/auth/refresh', { kind: 'network' });
+
+    const outcome = await session.restoreSession();
+
+    expect(outcome.state).toBe('offline');
+    expect(store.access).toBe('expired');
+    expect(store.refresh).toBe('r1');
+  });
+
+  it('reports server-error when the refresh attempt answers with a 5xx', async () => {
+    store.access = 'expired';
+    store.refresh = 'r1';
+    profile.value = USER;
+    on('GET', '/auth/me', { kind: 'http', status: 401, body: err(401) });
+    on('POST', '/auth/refresh', { kind: 'http', status: 503, body: err(503) });
+
+    const outcome = await session.restoreSession();
+
+    expect(outcome.state).toBe('server-error');
+    expect(store.access).toBe('expired');
+    expect(store.refresh).toBe('r1');
   });
 
   it('treats a 403 as a rejection without attempting a refresh', async () => {

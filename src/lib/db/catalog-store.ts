@@ -1,11 +1,17 @@
 import type { Catalog } from '../api/catalog';
+import { isCatalogCacheForScope, type CatalogCacheScope } from './catalog-scope';
 import { getDatabase } from './database';
 
 function isoNow(): string {
   return new Date().toISOString();
 }
 
-export async function saveCatalog(catalog: Catalog): Promise<void> {
+/**
+ * Replaces the cache with `catalog` and tags it with `ownerUserId`, the
+ * account whose fetch produced it (full reconciliation inside a transaction,
+ * so the cache never holds partial rows between fetches).
+ */
+export async function saveCatalog(catalog: Catalog, ownerUserId: string): Promise<void> {
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {
     await db.execAsync('DELETE FROM catalog_meta');
@@ -18,7 +24,8 @@ export async function saveCatalog(catalog: Catalog): Promise<void> {
     const program = catalog.program;
     if (program) {
       await db.runAsync(
-        'INSERT INTO catalog_meta (id, program_id, program_name, program_code, cached_at) VALUES (1, ?, ?, ?, ?)',
+        'INSERT INTO catalog_meta (id, user_id, program_id, program_name, program_code, cached_at) VALUES (1, ?, ?, ?, ?, ?)',
+        ownerUserId,
         program.id,
         program.name,
         program.code,
@@ -26,7 +33,8 @@ export async function saveCatalog(catalog: Catalog): Promise<void> {
       );
     } else {
       await db.runAsync(
-        'INSERT INTO catalog_meta (id, program_id, program_name, program_code, cached_at) VALUES (1, NULL, NULL, NULL, ?)',
+        'INSERT INTO catalog_meta (id, user_id, program_id, program_name, program_code, cached_at) VALUES (1, ?, NULL, NULL, NULL, ?)',
+        ownerUserId,
         isoNow(),
       );
     }
@@ -98,15 +106,22 @@ export async function saveCatalog(catalog: Catalog): Promise<void> {
   });
 }
 
-export async function getCatalog(): Promise<Catalog | null> {
+export async function getCatalog(scope: CatalogCacheScope): Promise<Catalog | null> {
   const db = await getDatabase();
   const meta = await db.getFirstAsync<{
     program_id: string | null;
     program_name: string | null;
     program_code: string | null;
-  }>('SELECT program_id, program_name, program_code FROM catalog_meta WHERE id = 1');
+    user_id: string | null;
+  }>('SELECT program_id, program_name, program_code, user_id FROM catalog_meta WHERE id = 1');
 
   if (!meta) {
+    return null;
+  }
+
+  // Never expose a cached catalog belonging to another account or another
+  // specialization (cross-account cache isolation).
+  if (!isCatalogCacheForScope({ programId: meta.program_id, userId: meta.user_id }, scope)) {
     return null;
   }
 

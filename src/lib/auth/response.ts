@@ -18,7 +18,17 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function asRole(value: unknown): UserRole {
-  return value === 'ADMIN' ? 'ADMIN' : 'STUDENT';
+  switch (value) {
+    case 'ADMIN':
+    case 'PROGRAM_MANAGER':
+    case 'SUBJECT_MANAGER':
+      return value;
+    case 'STUDENT':
+    default:
+      // Unknown/absent roles degrade to the least-privileged role; the server
+      // remains authoritative for every authorization decision.
+      return 'STUDENT';
+  }
 }
 
 function asStatus(value: unknown): AccountStatus {
@@ -42,6 +52,7 @@ export function parseUser(value: unknown): User {
     status: asStatus(user.status),
     profileImageUrl: typeof user.profileImageUrl === 'string' ? user.profileImageUrl : null,
     studentUniversityId: typeof user.studentUniversityId === 'string' ? user.studentUniversityId : null,
+    phone: typeof user.phone === 'string' && user.phone.length > 0 ? user.phone : null,
     programId: typeof user.programId === 'string' ? user.programId : null,
     createdAt: typeof user.createdAt === 'string' ? user.createdAt : '',
     updatedAt: typeof user.updatedAt === 'string' ? user.updatedAt : '',

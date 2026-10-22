@@ -1,4 +1,5 @@
 import { OnboardingSlideView } from "@/components/onboarding-slide";
+import { BrandLockup } from "@/components/ui/brand";
 import { Button } from "@/components/ui/button";
 import { ONBOARDING_SLIDES } from "@/constants/onboarding";
 import { useOnboarding } from "@/features/onboarding/onboarding-provider";
@@ -47,10 +48,16 @@ export default function OnboardingScreen() {
         className="flex-row items-center justify-between px-6"
         style={{ paddingTop: insets.top + 8, paddingBottom: 8 }}
       >
-        <Text className="text-lg font-bold text-slate-900 dark:text-white">StudyGo</Text>
-        <Pressable onPress={handleSkip} hitSlop={8}>
-          <Text className="text-sm font-medium text-brand-600 dark:text-brand-400">تخطي</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="تخطي الإعداد التعريفي"
+          onPress={handleSkip}
+          hitSlop={8}
+          className="px-2 py-1"
+        >
+          <Text className="text-sm font-semibold text-slate-500 dark:text-slate-400">تخطي</Text>
         </Pressable>
+        <BrandLockup size={32} />
       </View>
       <FlatList
         ref={listRef}
@@ -63,7 +70,7 @@ export default function OnboardingScreen() {
         // Pin the pager to LTR: in an RTL layout (Arabic) React Native mirrors
         // horizontal FlatLists, which made the last slide land first and broke
         // the pagingEnabled / getItemLayout / scrollToIndex offset math. Slide
-        // content restores its own RTL direction in OnboardingSlideView.
+        // content restores its own right-anchored layout in OnboardingSlideView.
         style={{ direction: "ltr" }}
         getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
         onViewableItemsChanged={onViewableItemsChanged}
@@ -76,14 +83,22 @@ export default function OnboardingScreen() {
         style={{ paddingBottom: Math.max(insets.bottom, 16) }}
       >
         <View className="flex-row items-center justify-center gap-2 pb-6" style={{ direction: "ltr" }}>
-          {ONBOARDING_SLIDES.map((_, i) => (
-            <Pressable key={i} onPress={() => handleGoToIndex(i)} hitSlop={6} className="px-1 py-1">
+          {ONBOARDING_SLIDES.map((slide, i) => (
+            <Pressable
+              key={slide.id}
+              accessibilityRole="button"
+              accessibilityLabel={`الشريحة ${i + 1} من ${ONBOARDING_SLIDES.length}`}
+              accessibilityState={{ selected: index === i }}
+              onPress={() => handleGoToIndex(i)}
+              hitSlop={8}
+              className="px-1 py-2"
+            >
               <View
                 className={cn(
-                  "h-2 rounded-full transition",
+                  "h-2 rounded-full",
                   index === i
-                    ? "w-6 bg-brand-600 dark:bg-brand-500"
-                    : "w-2 bg-slate-300 dark:bg-slate-600"
+                    ? "w-6 bg-brand-700 dark:bg-brand-400"
+                    : "w-2 bg-slate-300 dark:bg-slate-600",
                 )}
               />
             </Pressable>

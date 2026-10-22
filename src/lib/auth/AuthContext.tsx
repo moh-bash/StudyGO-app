@@ -5,14 +5,20 @@
  *
  * - `initializing`: reading stored tokens and performing the first validation.
  * - `authenticated`: the backend validated the session (online + authenticated).
- * - `offline`: the backend could not be reached; tokens are retained and the
- *   app may continue with locally available data. This is **not** proof of a
- *   remote session.
+ * - `offline`: the device genuinely could not reach the backend; tokens are
+ *   retained and the app may continue with locally available data. This is
+ *   **not** proof of a remote session.
+ * - `server-error`: the backend was reachable but did not give a usable answer
+ *   (5xx / malformed body / no answer within the startup deadline). Tokens are
+ *   retained like `offline`, but the device is online — the UI must not claim a
+ *   connectivity problem.
  * - `unauthenticated`: no stored session, or the backend explicitly rejected
  *   the credentials (local credentials cleared).
  *
  * Session logic lives in `./session`; this module only holds React state and
- * wires it together.
+ * wires it together. Profile updates keep object identity stable (see
+ * `./user-equality`) so a repeated validation of an unchanged profile never
+ * re-renders consumers or restarts memoized effects.
  */
 import {
   createContext,
@@ -25,13 +31,20 @@ import {
   type ReactNode,
 } from 'react';
 import { AppState } from 'react-native';
+import { onBackendReachable } from '../api/client';
 import type { User } from '../api/types';
 import * as session from './session';
 import { onSessionInvalidated } from './session';
 import type { RestoreOutcome } from './session';
+import { sameUser } from './user-equality';
 import { clearCoursesData } from '../db/database';
 
-export type AuthStatus = 'initializing' | 'authenticated' | 'offline' | 'unauthenticated';
+export type AuthStatus =
+  | 'initializing'
+  | 'authenticated'
+  | 'offline'
+  | 'server-error'
+  | 'unauthenticated';
 
 export interface AuthContextValue {
   status: AuthStatus;
@@ -63,19 +76,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!mounted.current || op !== opRef.current) {
       return;
     }
+    // Keep the previous object reference when nothing changed: every validation
+    // returns a fresh `GET /auth/me` object, and unconditional replacement
+    // churned `useAuth()` consumers and invalidated `[user]`-keyed memos
+    // (the `useCatalog` refetch loop). React bails out when we return `prev`.
+    const settleProfile = (next: User | null) => {
+      setUser((prev) => (sameUser(prev, next) ? prev : next));
+    };
     switch (outcome.state) {
       case 'authenticated':
-        setUser(outcome.user);
+        settleProfile(outcome.user);
         setStatus('authenticated');
         break;
       case 'offline':
-        setUser(outcome.user);
+        // Transport failure: local-only access, tokens kept. The user object is
+        // the cached profile snapshot — equally stable via `settleProfile`.
+        settleProfile(outcome.user);
         setStatus('offline');
+        break;
+      case 'server-error':
+        // The backend was reachable but failed or did not answer in time (5xx,
+        // malformed body, startup deadline): local-only access, tokens kept,
+        // and the UI is told the server is unhealthy — not offline.
+        settleProfile(outcome.user);
+        setStatus('server-error');
         break;
       case 'rejected':
       case 'none':
-        setUser(null);
+        settleProfile(null);
         setStatus('unauthenticated');
+        // Wipe locally cached course data on any terminal restore outcome so a
+        // rejected/absent session never leaves another account's catalog behind.
+        void clearCoursesData().catch(() => undefined);
         break;
     }
   }, []);
@@ -153,11 +185,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await validate();
   }, [validate]);
 
-  // Re-validate when the app returns to the foreground while offline. Relies on
-  // the single-flight guard rather than a timer, so rapid changes do not cause
-  // duplicate requests and the backend is never polled continuously.
+  // Re-validate when the app returns to the foreground while local-only
+  // (offline *or* server-error). Relies on the single-flight guard rather than
+  // a timer, so rapid changes do not cause duplicate requests and the backend
+  // is never polled continuously.
   useEffect(() => {
-    if (status !== 'offline') {
+    if (status !== 'offline' && status !== 'server-error') {
       return;
     }
     const subscription = AppState.addEventListener('change', (next) => {
@@ -167,6 +200,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     return () => subscription.remove();
   }, [status, validate]);
+
+  // Clear a stale local-only state as soon as *any* request proves the backend
+  // is reachable again. Without this, a single transient failure at boot (or on
+  // the foreground re-check) would leave the banner up forever, even while
+  // catalog/other requests are succeeding — the reported bug. The recovery
+  // chain cannot loop: a successful validation settles `user` with a stable
+  // reference (`sameUser`), so `useCatalog`'s scope does not change, no new
+  // catalog request fires, and no new `onBackendReachable` is emitted from this
+  // cycle. We only react while local-only, and reuse the single-flight
+  // `validate()` so this never becomes polling or a duplicate restore.
+  useEffect(() => {
+    return onBackendReachable(() => {
+      if (mounted.current && (statusRef.current === 'offline' || statusRef.current === 'server-error')) {
+        void validate();
+      }
+    });
+  }, [validate]);
 
   // Return to the signed-out state when a background request discovers the
   // session was rejected by the backend (refresh returned 401/403). The session
@@ -187,7 +237,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       status,
       user,
-      isLocalOnly: status === 'offline',
+      // Local-only covers both honest degraded states: unreachable transport
+      // (`offline`) and a reachable-but-failing backend (`server-error`).
+      isLocalOnly: status === 'offline' || status === 'server-error',
       signIn,
       signUp,
       signOut,

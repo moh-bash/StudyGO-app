@@ -13,12 +13,29 @@ describe('parseUser', () => {
       status: 'ACTIVE',
       profileImageUrl: null,
       studentUniversityId: 'SVU-1',
+      phone: '0512345678',
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
     expect(user.id).toBe('u1');
     expect(user.role).toBe('STUDENT');
     expect(user.studentUniversityId).toBe('SVU-1');
+    expect(user.phone).toBe('0512345678');
+  });
+
+  it('normalises a missing/empty phone to null', () => {
+    const base = { id: 'u1', fullName: 'Layla', email: 'layla@example.com' };
+    expect(parseUser(base).phone).toBeNull();
+    expect(parseUser({ ...base, phone: '' }).phone).toBeNull();
+  });
+
+  it('recognises every backend role and degrades unknown roles to STUDENT', () => {
+    const base = { id: 'u1', fullName: 'Layla', email: 'layla@example.com' };
+    expect(parseUser({ ...base, role: 'ADMIN' }).role).toBe('ADMIN');
+    expect(parseUser({ ...base, role: 'PROGRAM_MANAGER' }).role).toBe('PROGRAM_MANAGER');
+    expect(parseUser({ ...base, role: 'SUBJECT_MANAGER' }).role).toBe('SUBJECT_MANAGER');
+    expect(parseUser({ ...base, role: 'SUPER_ADMIN' }).role).toBe('STUDENT');
+    expect(parseUser(base).role).toBe('STUDENT');
   });
 
   it('rejects payloads missing required identity fields', () => {

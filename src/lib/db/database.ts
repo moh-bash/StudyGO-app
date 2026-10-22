@@ -1,7 +1,12 @@
 import * as SQLite from 'expo-sqlite';
+import {
+  CATALOG_TABLES,
+  STUDY_PLAN_ENTRIES_DDL,
+  STUDY_PLAN_ENTRIES_INDEX_DDL,
+} from './schema';
 
 const DATABASE_NAME = 'studygo.db';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 3;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -104,6 +109,26 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
     version = 1;
   }
 
+  if (version < 2) {
+    // v2 (Phase 1 — account isolation): the cached catalog is tagged with the
+    // account that fetched it; reads from any other account are ignored.
+    // Additive column — no existing rows are deleted or rewritten.
+    await db.execAsync('ALTER TABLE catalog_meta ADD COLUMN user_id TEXT');
+    version = 2;
+  }
+
+  if (version < 3) {
+    // v3 (Phase 3 — local study plan): a private per-account plan table holding
+    // the selected subjects, the optional section, the project/exam marks and
+    // snapshots of the weights/credits in force when each subject was planned.
+    // Purely additive: no existing row or table is modified or deleted. The
+    // legacy `course_selections` rows are preserved and adopted into this table
+    // at runtime by the first signed-in account (see `plan-store`).
+    await db.execAsync(STUDY_PLAN_ENTRIES_DDL);
+    await db.execAsync(STUDY_PLAN_ENTRIES_INDEX_DDL);
+    version = 3;
+  }
+
   await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
 }
 
@@ -117,13 +142,17 @@ export function getDatabase(): Promise<SQLite.SQLiteDatabase> {
   return databasePromise;
 }
 
+/**
+ * Clears the shared *catalog cache* only (on logout or a rejected session).
+ *
+ * The student's private study plan is deliberately NOT cleared: plans, marks and
+ * section choices must survive logout and authentication recovery. They are
+ * isolated per account by `study_plan_entries.user_id`, so the next account on
+ * the device can never read them.
+ */
 export async function clearCoursesData(): Promise<void> {
   const db = await getDatabase();
-  await db.execAsync('DELETE FROM catalog_meta');
-  await db.execAsync('DELETE FROM semesters');
-  await db.execAsync('DELETE FROM subjects');
-  await db.execAsync('DELETE FROM professors');
-  await db.execAsync('DELETE FROM sections');
-  await db.execAsync('DELETE FROM schedules');
-  await db.execAsync('DELETE FROM course_selections');
+  for (const table of CATALOG_TABLES) {
+    await db.execAsync(`DELETE FROM ${table}`);
+  }
 }

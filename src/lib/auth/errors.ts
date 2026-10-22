@@ -19,6 +19,16 @@ export type AuthErrorContext = 'login' | 'register';
  */
 export function mapAuthError(error: unknown, context: AuthErrorContext = 'login'): string {
   if (error instanceof NetworkError) {
+    // Only a genuine transport failure says anything about the connection. A
+    // timeout means the *server* was slow, and an abort says nothing at all —
+    // wording either as "check your internet" is the false warning this
+    // function used to produce (Phase 5.2).
+    if (error.kind === 'timeout') {
+      return 'استغرق الخادم وقتًا طويلًا للاستجابة. حاول مرة أخرى.';
+    }
+    if (error.kind === 'aborted') {
+      return 'تم إلغاء الطلب قبل اكتماله. حاول مرة أخرى.';
+    }
     return 'تعذّر الاتصال بالخادم. تأكّد من اتصالك بالإنترنت ثم حاول مجددًا.';
   }
   if (error instanceof ConfigError) {

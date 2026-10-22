@@ -16,8 +16,8 @@
  * - `src/common/enums.ts`
  */
 
-/** `UserRole` (`src/common/enums.ts`). */
-export type UserRole = 'STUDENT' | 'ADMIN';
+/** `UserRole` (`src/common/enums.ts`). All four server-side roles. */
+export type UserRole = 'STUDENT' | 'ADMIN' | 'PROGRAM_MANAGER' | 'SUBJECT_MANAGER';
 
 /** `AccountStatus` (`src/common/enums.ts`). */
 export type AccountStatus = 'ACTIVE' | 'SUSPENDED';
@@ -34,6 +34,7 @@ export interface User {
   status: AccountStatus;
   profileImageUrl: string | null;
   studentUniversityId: string | null;
+  phone: string | null;
   programId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -80,11 +81,14 @@ export interface RegisterRequest {
   /** Optional university student id. */
   studentUniversityId?: string;
   /**
-   * Selected academic program UUID. Registered against the program's `id` from
-   * `GET /programs/registration`; the server validates that it exists and is
-   * active. Never a program name/code, and never a client-chosen role.
+   * Selected academic program UUID — **required** by the backend `RegisterDto`.
+   * Registered against the program's `id` from `GET /programs/registration`;
+   * the server validates that it exists and is active. Never a program
+   * name/code, and never a client-chosen role.
    */
-  programId?: string;
+  programId: string;
+  /** Optional contact phone number (5-20 digits, optional leading +). */
+  phone?: string;
 }
 
 /** Request body for `POST /auth/refresh` and `POST /auth/logout`. */

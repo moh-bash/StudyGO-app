@@ -1,16 +1,17 @@
+import { BrandLockup } from "@/components/ui/brand";
 import { Button } from "@/components/ui/button";
+import { Callout } from "@/components/ui/callout";
+import { Screen, ScreenScroll } from "@/components/ui/screen";
 import { TextField } from "@/components/ui/text-field";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { mapAuthError } from "@/lib/auth/errors";
 import { validateEmail, validateLoginPassword } from "@/lib/auth/validation";
 import { router } from "expo-router";
-import { LockKeyhole, Mail } from "lucide-react-native";
+import { AlertCircle, LockKeyhole, Mail } from "lucide-react-native";
 import { useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
 
 export default function LoginScreen() {
-  const insets = useSafeAreaInsets();
   const { signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -40,29 +41,32 @@ export default function LoginScreen() {
   };
 
   return (
-    <View className="flex-1 bg-white dark:bg-slate-950">
+    <Screen>
       <KeyboardAvoidingView
         className="flex-1"
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        // On Android the window already resizes for the keyboard
+        // (`adjustResize`), and `behavior="height"` there fights with it.
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
       >
-        <ScrollView
-          className="flex-1"
-          contentContainerStyle={{
-            flexGrow: 1,
-            paddingHorizontal: 24,
-            paddingTop: insets.top + 16,
-            paddingBottom: Math.max(insets.bottom, 24),
-          }}
-          keyboardShouldPersistTaps="handled"
+        <ScreenScroll
+          className="px-6"
+          contentContainerStyle={{ flexGrow: 1 }}
+          contentClassName="gap-8 pt-4"
         >
           <View className="flex-1 justify-center gap-8">
-            <View className="gap-2">
-              <Text className="text-3xl font-bold text-slate-900 dark:text-white">مرحبًا بعودتك</Text>
-              <Text className="text-base text-slate-500 dark:text-slate-400">
-                سجّل الدخول لمتابعة رحلتك التعليمية.
-              </Text>
+            <View className="gap-6">
+              <BrandLockup />
+              <View className="gap-2">
+                <Text className="text-right text-3xl font-bold leading-9 text-slate-900 dark:text-white">
+                  مرحبًا بعودتك
+                </Text>
+                <Text className="text-right text-base leading-6 text-slate-500 dark:text-slate-400">
+                  سجّل الدخول لمتابعة رحلتك التعليمية.
+                </Text>
+              </View>
             </View>
+
             <View className="gap-4">
               <TextField
                 label="البريد الإلكتروني"
@@ -72,6 +76,7 @@ export default function LoginScreen() {
                 autoCorrect={false}
                 keyboardType="email-address"
                 textContentType="emailAddress"
+                textAlign="left"
                 value={email}
                 onChangeText={(value) => {
                   setEmail(value);
@@ -94,20 +99,30 @@ export default function LoginScreen() {
                 }}
                 error={fieldErrors.password}
                 returnKeyType="done"
-                onSubmitEditing={handleLogin}
+                onSubmitEditing={() => void handleLogin()}
               />
-              {error ? <Text className="text-sm text-red-500">{error}</Text> : null}
-              <Button label="تسجيل الدخول" loading={loading} onPress={handleLogin} />
+              {error ? (
+                <Callout tone="danger" icon={AlertCircle} message={error} />
+              ) : null}
+              <Button label="تسجيل الدخول" loading={loading} onPress={() => void handleLogin()} />
             </View>
-            <View className="flex-row items-center justify-center gap-1 pt-4">
+
+            <View className="flex-row items-center justify-center gap-1 pt-2">
               <Text className="text-sm text-slate-500 dark:text-slate-400">ليس لديك حساب؟</Text>
-              <Pressable onPress={() => router.push("/(auth)/sign-up")} hitSlop={8}>
-                <Text className="text-sm font-semibold text-brand-600 dark:text-brand-400">إنشاء حساب</Text>
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel="إنشاء حساب جديد"
+                onPress={() => router.push("/(auth)/sign-up")}
+                hitSlop={8}
+              >
+                <Text className="text-sm font-semibold text-brand-700 dark:text-brand-400">
+                  إنشاء حساب
+                </Text>
               </Pressable>
             </View>
           </View>
-        </ScrollView>
+        </ScreenScroll>
       </KeyboardAvoidingView>
-    </View>
+    </Screen>
   );
 }

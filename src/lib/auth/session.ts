@@ -13,16 +13,19 @@
  * concurrent callers share one in-flight request so a rotated token is never
  * replayed, and there is no automatic retry loop.
  *
- * Restoration distinguishes a *transient network failure* (tokens are kept and
+ * Restoration distinguishes a *genuine transport failure* (tokens are kept and
  * the app continues in a local-only/offline state) from an *explicit rejection*
- * (401/403 — tokens are cleared, the session is over). It never treats the mere
- * presence of a stored token as proof of a valid backend session.
+ * (401/403 — tokens are cleared, the session is over) and from *the backend
+ * answering but failing* (a 5xx or malformed body — the device is online, the
+ * server is unhealthy; reported as `server-error`, never as `offline`). It
+ * never treats the mere presence of a stored token as proof of a valid backend
+ * session, and never treats an HTTP error as proof of missing connectivity.
  */
-import { ApiError } from '../api/errors';
+import { ApiError, isTransportFailure } from '../api/errors';
 import { authApi } from '../api/auth';
 import { setRefreshHandler } from '../api/client';
 import type { AuthResponse, User } from '../api/types';
-import { tokenStorage } from '../storage/token-storage';
+import { tokenStorage, TokenStorageError } from '../storage/token-storage';
 import { clearProfile, getProfile, saveProfile } from '../storage/profile-cache';
 import { parseAuthResponse, parseUser } from './response';
 
@@ -31,35 +34,48 @@ export interface SignUpInput {
   email: string;
   password: string;
   /**
-   * Selected academic program UUID (from `GET /programs/registration`). Required
-   * by the app even though the backend `RegisterDto` treats it as optional; the
-   * server validates that it exists and is active. The caller must confirm the
-   * id belongs to the currently loaded program list.
+   * Selected academic program UUID (from `GET /programs/registration`).
+   * Required by the backend `RegisterDto`; the server validates that it
+   * exists and is active. The caller must confirm the id belongs to the
+   * currently loaded program list.
    */
   programId: string;
+  /** Optional contact phone number; omitted from the request when empty. */
+  phone?: string;
 }
 
 /**
  * Result of a session-restore attempt.
  *
  * - `authenticated`: the backend validated the session (online + authenticated).
- * - `offline`: the backend could not be reached; tokens are retained and the
- *   app may continue with locally available data. This is **not** proof of a
- *   remote session.
+ * - `offline`: the device genuinely could not reach the backend (a real
+ *   transport failure: no network, DNS failure, connection refused); tokens are
+ *   retained and the app may continue with locally available data. This is
+ *   **not** proof of a remote session.
+ * - `server-error`: the backend was reachable but did not produce a usable
+ *   answer — it failed (5xx / malformed body) or did not answer within the
+ *   startup deadline. The device is online and the server is reachable but
+ *   slow/unhealthy — this must never be presented as "you are offline". Tokens
+ *   are retained, exactly like `offline`.
  * - `rejected`: the backend explicitly rejected the credentials/session; local
  *   credentials have been cleared.
- * - `none`: no stored session existed.
+ * - `none`: no stored session existed (or secure storage itself was unreadable,
+ *   so no session can be proven).
  */
 export type RestoreOutcome =
   | { state: 'none' }
   | { state: 'authenticated'; user: User }
   | { state: 'offline'; user: User | null }
+  | { state: 'server-error'; user: User | null }
   | { state: 'rejected' };
 
 /**
  * Shorter-than-default timeout for the startup validation call so a slow or
  * unreachable backend does not hold the opening screen for the full request
- * timeout. An abort surfaces as a `NetworkError`, which maps to `offline`.
+ * timeout. The abort surfaces as a `NetworkError` with `kind: 'aborted'`,
+ * which is **not** a transport failure: a server that needs more than six
+ * seconds to answer is slow, not absent, so the app reports `server-error`
+ * and never claims the device is offline.
  */
 const RESTORE_TIMEOUT_MS = 6_000;
 
@@ -139,17 +155,19 @@ export async function signIn(email: string, password: string): Promise<User> {
  *
  * The verified backend issues a full session on registration, so a successful
  * sign-up establishes an authenticated session. Only DTO-supported fields are
- * sent (`fullName`, `email`, `password`, `programId`); the password confirmation
- * is a client-only check and is never transmitted, and no `role` is ever sent —
- * the backend always assigns `STUDENT`.
+ * sent (`fullName`, `email`, `password`, `programId`, optional `phone`); the
+ * password confirmation is a client-only check and is never transmitted, and
+ * no `role` is ever sent — the backend always assigns `STUDENT`.
  */
 export async function signUp(input: SignUpInput): Promise<User> {
+  const phone = input.phone?.trim();
   const response = parseAuthResponse(
     await authApi.register({
       fullName: input.fullName.trim(),
       email: input.email.trim(),
       password: input.password,
       programId: input.programId,
+      ...(phone ? { phone } : {}),
     }),
   );
   await persistTokens(response);
@@ -212,18 +230,27 @@ function isAuthRejection(error: unknown): error is ApiError {
  * Restores a session on startup (or when reconnecting).
  *
  * The access token is validated against `GET /auth/me`. A `401` triggers
- * exactly one refresh attempt. A transient failure (offline, timeout, 5xx,
- * config/parse error) keeps the tokens and returns `offline`; an explicit
- * rejection clears them and returns `rejected`.
+ * exactly one refresh attempt. Outcomes, classified honestly by *what actually
+ * happened on the wire*:
+ *
+ * - transport failure (offline, timeout, abort) → `offline` — tokens kept;
+ * - backend answered with 5xx / malformed body → `server-error` — tokens kept,
+ *   but the device is **online** and must not be told "you are offline";
+ * - explicit rejection (401 after a failed refresh, 403) → `rejected` — local
+ *   credentials cleared;
+ * - secure storage unreadable → `none` — no session can be proven.
  */
 export async function restoreSession(): Promise<RestoreOutcome> {
   let tokens;
   try {
     tokens = await tokenStorage.getTokens();
-  } catch {
-    // Secure storage unavailable: no provable session. Keep any cached profile
-    // for display, but do not claim authentication.
-    return { state: 'none' };
+  } catch (error) {
+    if (error instanceof TokenStorageError) {
+      // Secure storage unavailable: no provable session. Keep any cached profile
+      // for display, but do not claim authentication.
+      return { state: 'none' };
+    }
+    throw error;
   }
 
   if (!tokens) {
@@ -246,7 +273,10 @@ export async function restoreSession(): Promise<RestoreOutcome> {
         if (isAuthRejection(refreshError)) {
           return { state: 'rejected' };
         }
-        return { state: 'offline', user: await getProfile() };
+        // Same honest classification for the refresh attempt itself: only a
+        // transport failure is "offline"; a 5xx answer means the (reachable)
+        // server is unhealthy.
+        return { state: restoreFailureState(refreshError), user: await getProfile() };
       }
     }
 
@@ -255,18 +285,34 @@ export async function restoreSession(): Promise<RestoreOutcome> {
       return { state: 'rejected' };
     }
 
-    // Transient: NetworkError, timeout, 5xx, config/parse problems. Retain the
-    // tokens so connectivity can be retried, and expose whatever profile we
-    // cached locally.
-    return { state: 'offline', user: await getProfile() };
+    return { state: restoreFailureState(error), user: await getProfile() };
   }
+}
+
+/**
+ * Maps a non-auth `restoreSession` failure to `offline` vs `server-error`.
+ *
+ * `offline` is reserved for a real transport failure (`kind: 'transport'`):
+ * the request never reached a server (no network, DNS failure, connection
+ * refused). Every other failure means the backend was either reachable and
+ * failing, or simply too slow to answer within the deadline — in both cases
+ * the device may well be online, so it is reported as `server-error` and never
+ * worded as a connectivity problem.
+ *
+ * Classified through {@link isTransportFailure} so the rule has exactly one
+ * implementation across the app.
+ */
+function restoreFailureState(error: unknown): 'offline' | 'server-error' {
+  return isTransportFailure(error) ? 'offline' : 'server-error';
 }
 
 /**
  * Logs out: attempts to revoke the refresh token server-side, then always clears
  * local credentials + cached profile. Local cleanup happens even when the
- * network request fails or the access token is expired. Local SQLite data is
- * never touched.
+ * network request fails. Server-side revocation works even when the access
+ * token has expired — the backend accepts `POST /auth/logout` based on
+ * refresh-token possession. Local SQLite data is owned by `AuthContext`, which
+ * wipes it on sign-out and on every terminal session outcome.
  */
 export async function logout(): Promise<void> {
   let refreshToken: string | null = null;
